@@ -1,0 +1,15 @@
+# Godot
+.godot/
+*.import.tmp
+build/
+export_credentials.cfg
+*.keystore
+*.jks
+
+# Blender
+*.blend1
+__pycache__/
+
+# OS
+.DS_Store
+Thumbs.db
