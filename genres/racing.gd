@@ -1,19 +1,20 @@
 extends GenreBase
-## Racing world: glide through the sky-tram lanes, catch Light orbs, dodge Warden drones.
-## Graft mode "beat" (Racing x Rhythm): everything arrives on the beat and the track
-## only appears on the beat.
+## Racing world (3D): Ira's glider flies three sky lanes above Velmora.
+## Catch Light orbs, dodge Warden drones.
+## Graft mode "beat" (Racing x Rhythm): everything arrives on the beat and the
+## golden track only appears on the beat.
 ## Controls: tap left/right half, swipe, or arrow keys / A D.
 
 const LANES := 3
-const LANE_GAP := 190.0
-const PLAYER_Y_FROM_BOTTOM := 150.0
+const LANE_GAP := 2.3
+const SPAWN_Z := -70.0
+const HIT_RANGE := 0.9
 
 var duration := 40.0
 var elapsed := 0.0
-var speed := 420.0
+var speed := 18.0
 var lane := 1
-var player_x := 0.0
-var objects: Array = []      # {lane, y, kind: "orb"/"drone", hit: bool}
+var objects: Array = []      # {lane, z, kind: "orb"/"drone", hit, node}
 var spawn_timer := 0.0
 var orbs_total := 0
 var orbs_caught := 0
@@ -24,12 +25,20 @@ var bpm := 110.0
 var beat_len := 0.545
 var _last_beat := -1
 var _beat_glow := 0.0
-var _scroll := 0.0
 var _shake := 0.0
 var _swipe_start := Vector2.ZERO
 var _rng := RandomNumberGenerator.new()
-var _pending_spawns: Array = []  # beat mode: {arrive_t, lane, kind}
+var _scheduled: Dictionary = {}  # beat mode: beats already given an object
 var _streak := 0
+var _glider: Node3D
+var _rails: Array[MeshInstance3D] = []
+var _rail_mats: Array[StandardMaterial3D] = []
+var _dashes: Array[Node3D] = []
+var _scenery: Array[Node3D] = []
+var _cam_base := Vector3(0, 2.7, 5.6)
+var _orb_pool: Pool
+var _drone_pool: Pool
+var _glider_shadow: MeshInstance3D
 
 
 func intro_hint() -> String:
@@ -42,30 +51,89 @@ func setup_world() -> void:
 	beat_mode = mode == "beat"
 	_rng.seed = hash(seed_id)
 	duration = 34.0 if assist else 40.0
-	speed = 380.0 if assist else 420.0
+	speed = _base_speed()
 	beat_len = 60.0 / bpm
+	_build_sky_road()
+	_orb_pool = Pool.new("orb", world)
+	_drone_pool = Pool.new("drone", world, func(n): n.rotation.y = PI)
+	_orb_pool.prewarm(8)
+	_drone_pool.prewarm(6)
+	camera.position = _cam_base
+	camera.look_at(Vector3(0, 0.4, -8))
 
 
-func on_start() -> void:
-	player_x = _lane_x(lane)
+func _base_speed() -> float:
+	return 15.0 if assist else 18.0
+
+
+func music_track() -> String:
+	return "world:%d" % int(bpm if mode == "beat" else 90)
 
 
 func _lane_x(l: int) -> float:
-	return size.x / 2.0 + (l - 1) * LANE_GAP
+	return (l - 1) * LANE_GAP
 
 
-func _player_y() -> float:
-	return size.y - PLAYER_Y_FROM_BOTTOM
+func _build_sky_road() -> void:
+	# Golden rails between the lanes.
+	for i in LANES + 1:
+		var x := (i - 1.5) * LANE_GAP
+		var rail := Stage.box(Vector3(0.08, 0.05, 90.0), UI.GOLD, 2.0)
+		rail.position = Vector3(x, -0.4, -40.0)
+		world.add_child(rail)
+		_rails.append(rail)
+		_rail_mats.append(rail.material_override)
+	# Moving lane dashes give a sense of speed.
+	for i in 30:
+		var d := Stage.box(Vector3(0.12, 0.03, 1.2), Color("#fff4cf"), 1.2)
+		d.position = Vector3(_lane_x(i % LANES), -0.42, -i * 3.0)
+		world.add_child(d)
+		_dashes.append(d)
+	# The city far below, scrolling past.
+	var kinds := ["tower_a", "tower_b", "tower_c"]
+	for i in 26:
+		var t := Stage.model(kinds[i % 3])
+		var side := -1.0 if i % 2 == 0 else 1.0
+		t.position = Vector3(side * _rng.randf_range(7.0, 18.0), -14.0 + _rng.randf_range(-2, 3), -i * 4.0)
+		t.scale = Vector3.ONE * _rng.randf_range(1.0, 1.8)
+		Stage.set_part_visible(t, "Windows", _rng.randf() < 0.3 + GameState.bloom_ratio())
+		world.add_child(t)
+		_scenery.append(t)
+	_glider = Stage.model("glider")
+	_glider.position = Vector3(_lane_x(lane), 0, 0)
+	_glider.rotation.y = PI  # face down the road (-Z)
+	world.add_child(_glider)
+	_glider_shadow = Stage.blob_shadow(0.7)
+	_glider_shadow.position = Vector3(_lane_x(lane), -0.41, 0)
+	world.add_child(_glider_shadow)
 
 
 func tick(delta: float) -> void:
 	elapsed += delta
 	var t_ratio := elapsed / duration
-	speed = lerpf(380.0 if assist else 420.0, 720.0 * difficulty, t_ratio)
-	_scroll = fmod(_scroll + speed * delta, 80.0)
+	speed = lerpf(_base_speed(), 30.0 * difficulty, t_ratio)
 	_shake = maxf(0.0, _shake - delta * 3.0)
 	_beat_glow = maxf(0.0, _beat_glow - delta * 2.5)
-	player_x = lerpf(player_x, _lane_x(lane), minf(1.0, delta * 14.0))
+
+	# glider: slide between lanes, bank into the turn, bob gently
+	var target_x := _lane_x(lane)
+	var dx := target_x - _glider.position.x
+	_glider.position.x += dx * minf(1.0, delta * 12.0)
+	_glider.position.y = sin(elapsed * 3.0) * 0.08
+	_glider.rotation.z = clampf(dx * 0.35, -0.6, 0.6)
+	_glider_shadow.position.x = _glider.position.x
+	# Camera feel: FOV widens with speed.
+	camera.fov = lerpf(60.0, 74.0, clampf((speed - _base_speed()) / 14.0, 0.0, 1.0))
+	camera.position = _cam_base + Vector3(_glider.position.x * 0.35, 0, 0) + Vector3(randf_range(-1, 1), randf_range(-1, 1), 0) * 0.12 * _shake
+
+	for d in _dashes:
+		d.position.z += speed * delta
+		if d.position.z > 6.0:
+			d.position.z -= 90.0
+	for s in _scenery:
+		s.position.z += speed * 0.35 * delta
+		if s.position.z > 12.0:
+			s.position.z -= 104.0
 
 	if beat_mode:
 		var beat := int(floor(elapsed / beat_len))
@@ -74,18 +142,32 @@ func tick(delta: float) -> void:
 			_beat_glow = 1.0
 			Sfx.play("beat_soft" if beat % 4 else "beat")
 		_spawn_beat_mode()
+		for m in _rail_mats:
+			m.albedo_color.a = 0.05 + _beat_glow * 0.95  # the track only appears on the beat
+			m.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+			m.emission_energy_multiplier = 0.2 + _beat_glow * 3.0
+		for d in _dashes:
+			d.visible = _beat_glow > 0.35
 	else:
 		spawn_timer -= delta
 		if spawn_timer <= 0.0 and elapsed < duration - 2.0:
 			spawn_timer = _rng.randf_range(0.45, 0.8) / difficulty
-			_spawn(_rng.randi_range(0, LANES - 1), "orb" if _rng.randf() < 0.55 else "drone", -40.0)
+			_spawn(_rng.randi_range(0, LANES - 1), "orb" if _rng.randf() < 0.55 else "drone", SPAWN_Z)
 
 	for o in objects:
-		o.y += speed * delta
-		if not o.hit and o.lane == lane and absf(o.y - _player_y()) < 42.0:
+		o.z += speed * delta
+		o.node.position.z = o.z
+		if o.kind == "orb":
+			o.node.rotation.y += delta * 3.0
+		else:
+			o.node.position.y = 0.2 + sin(elapsed * 4.0 + o.z) * 0.15
+		if not o.hit and o.lane == lane and absf(o.z) < HIT_RANGE:
 			o.hit = true
 			_collide(o)
-	objects = objects.filter(func(o): return o.y < size.y + 60 and not (o.hit and o.kind == "orb"))
+	for o in objects:
+		if o.z > 8.0 or (o.hit and o.kind == "orb"):
+			(_orb_pool if o.kind == "orb" else _drone_pool).release(o.node)
+	objects = objects.filter(func(o): return o.z <= 8.0 and not (o.hit and o.kind == "orb"))
 
 	if hearts <= 0:
 		finish(0, "Out of hearts at %d%% of the route. Orbs %d/%d" % [int(t_ratio * 100), orbs_caught, orbs_total])
@@ -93,28 +175,29 @@ func tick(delta: float) -> void:
 		_end()
 
 
-## Beat mode: schedule objects so they reach the player exactly on a beat.
+## Beat mode: schedule objects so they reach the glider exactly on a beat.
 func _spawn_beat_mode() -> void:
-	var dist := _player_y() + 40.0
-	var travel_t := dist / speed
-	var next_beat: float = ceil((elapsed + travel_t) / beat_len)
+	var travel_t := -SPAWN_Z / speed
+	var next_beat := int(ceil((elapsed + travel_t) / beat_len))
 	var arrive: float = next_beat * beat_len
-	if arrive > duration - 1.0:
+	if arrive > duration - 1.0 or _scheduled.has(next_beat):
 		return
-	if _pending_spawns.has(int(next_beat)):
-		return
-	_pending_spawns.append(int(next_beat))
-	if int(next_beat) % 2 == 0 or _rng.randf() < 0.35 * difficulty:
+	_scheduled[next_beat] = true
+	if next_beat % 2 == 0 or _rng.randf() < 0.35 * difficulty:
 		var kind := "orb" if _rng.randf() < 0.6 else "drone"
-		var y: float = _player_y() - (arrive - elapsed) * speed
-		_spawn(_rng.randi_range(0, LANES - 1), kind, y)
+		var z: float = -(arrive - elapsed) * speed
+		_spawn(_rng.randi_range(0, LANES - 1), kind, z)
 
 
-func _spawn(l: int, kind: String, y: float) -> void:
-	# Fairness: never place a drone where it would block every lane.
+func _spawn(l: int, kind: String, z: float) -> void:
 	if kind == "orb":
 		orbs_total += 1
-	objects.append({"lane": l, "y": y, "kind": kind, "hit": false})
+	var node := (_orb_pool if kind == "orb" else _drone_pool).acquire()
+	node.position = Vector3(_lane_x(l), 0.3 if kind == "orb" else 0.2, z)
+	if kind == "drone":
+		node.rotation.y = PI  # look at the player
+	Pool.teleported(node)
+	objects.append({"lane": l, "z": z, "kind": kind, "hit": false, "node": node})
 
 
 func _collide(o: Dictionary) -> void:
@@ -132,6 +215,9 @@ func _collide(o: Dictionary) -> void:
 		_shake = 1.0
 		Sfx.play("hit")
 		GameState.haptic(80)
+		hit_stop(0.08)
+		var tw := create_tween()
+		tw.tween_property(o.node, "scale", Vector3.ONE * 0.01, 0.25)
 
 
 func _end() -> void:
@@ -155,11 +241,10 @@ func move(dir: int) -> void:
 func _input(event: InputEvent) -> void:
 	if not running or finished:
 		return
-	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode in [KEY_LEFT, KEY_A]:
-			move(-1)
-		elif event.keycode in [KEY_RIGHT, KEY_D]:
-			move(1)
+	if Controls.pressed(event, "move_left"):
+		move(-1)
+	elif Controls.pressed(event, "move_right"):
+		move(1)
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
 		if event.position.y < 80:
 			return
@@ -175,17 +260,16 @@ func _input(event: InputEvent) -> void:
 
 ## Test hook: steer toward the nearest orb and away from drones.
 func autoplay_step() -> void:
-	var py := _player_y()
 	var danger := {}
 	var best_lane := lane
-	var best_y := -INF
+	var best_z := -INF
 	for o in objects:
-		if o.hit or o.y > py + 30 or o.y < py - 420:
+		if o.hit or o.z > 1.0 or o.z < -16.0:
 			continue
 		if o.kind == "drone":
 			danger[o.lane] = true
-		elif o.y > best_y:
-			best_y = o.y
+		elif o.z > best_z:
+			best_z = o.z
 			best_lane = o.lane
 	var target := best_lane
 	if danger.has(target):
@@ -198,41 +282,6 @@ func autoplay_step() -> void:
 
 
 func _draw() -> void:
-	var off := Vector2(randf_range(-6, 6), randf_range(-6, 6)) * _shake
-	var track_alpha := 0.9
-	if beat_mode:
-		track_alpha = 0.08 + _beat_glow * 0.9  # the track only appears on the beat
-	# lanes
-	for l in LANES:
-		var x := _lane_x(l) + off.x
-		draw_rect(Rect2(x - LANE_GAP / 2 + 8, 70, LANE_GAP - 16, size.y - 70), Color(0, 0, 0, 0.16))
-		var y := -80.0 + _scroll
-		while y < size.y:
-			draw_rect(Rect2(x - 3, y + 70, 6, 36), Color(1, 0.95, 0.8, 0.35 * track_alpha))
-			y += 80.0
-	for l in LANES + 1:
-		var bx := size.x / 2.0 + (l - 1.5) * LANE_GAP + off.x
-		draw_line(Vector2(bx, 70), Vector2(bx, size.y), Color(UI.GOLD, 0.55 * track_alpha), 3.0)
-	# objects
-	for o in objects:
-		var p := Vector2(_lane_x(o.lane), o.y) + off
-		if o.kind == "orb":
-			draw_circle(p, 26, Color(UI.GOLD, 0.25))
-			draw_circle(p, 16, UI.GOLD)
-			draw_circle(p + Vector2(-4, -4), 6, Color(1, 1, 1, 0.7))
-		else:
-			# Warden drone: polite, round, in the way
-			draw_rect(Rect2(p - Vector2(30, 18), Vector2(60, 36)), UI.CORAL)
-			draw_circle(p + Vector2(0, -2), 9, Color("#2b2540"))
-			draw_circle(p + Vector2(0, -2), 4, Color("#ffeeee"))
-			draw_line(p + Vector2(-38, -20), p + Vector2(-22, -20), Color("#ffd0c8"), 3)
-			draw_line(p + Vector2(22, -20), p + Vector2(38, -20), Color("#ffd0c8"), 3)
-	# Ira on her glider
-	var pp := Vector2(player_x, _player_y()) + off
-	draw_colored_polygon(PackedVector2Array([pp + Vector2(0, -34), pp + Vector2(30, 22), pp + Vector2(-30, 22)]), Color("#fff7e8"))
-	draw_circle(pp + Vector2(0, -6), 10, Color("#2b2540"))
-	draw_line(pp + Vector2(4, -10), pp + Vector2(26, 6 + sin(elapsed * 12.0) * 4), Color("#ff8a5c"), 4)
-	# HUD
 	var hud := "✦ %d   " % orbs_caught
 	for i in 3:
 		hud += "♥" if i < hearts else "♡"

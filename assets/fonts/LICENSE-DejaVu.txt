@@ -1,0 +1,3 @@
+assets/fonts/symbols.ttf is a subset of DejaVu Sans (https://dejavu-fonts.github.io/).
+DejaVu fonts are based on Bitstream Vera fonts and are free to use, modify and redistribute
+under the Bitstream Vera / Arev font licence, with DejaVu changes in the public domain.

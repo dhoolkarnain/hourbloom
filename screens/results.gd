@@ -9,7 +9,8 @@ func _ready() -> void:
 	var seed_id: String = params.get("seed_id", "")
 	var earned: int = params.get("stars", 0)
 	var seed := SeedData.get_seed(seed_id)
-	var summary := GameState.record_result(seed_id, earned)
+	var assisted: bool = params.get("assist", false)
+	var summary := GameState.record_result(seed_id, earned, assisted)
 
 	add_child(UI.background(GameState.bloom_ratio()))
 	var panel := PanelContainer.new()
@@ -50,19 +51,27 @@ func _ready() -> void:
 	var hint := ""
 	if earned < 3:
 		hint = "Best %s. I can do better..." % UI.stars_text(summary.best)
-	col.add_child(UI.label(hint, 18, UI.INK_DIM, HORIZONTAL_ALIGNMENT_CENTER))
+	var hint_label := UI.label(hint, 18, UI.INK_DIM, HORIZONTAL_ALIGNMENT_CENTER)
+	col.add_child(hint_label)
 
 	var btns := HBoxContainer.new()
 	btns.alignment = BoxContainer.ALIGNMENT_CENTER
 	btns.add_theme_constant_override("separation", 16)
 	col.add_child(btns)
-	var retry := UI.button("Try again ↻", func(): main.play_seed(seed_id), 26)
+	var retry := UI.button("Try again ↻", func(): main.play_seed(seed_id, {"assist": assisted}), 26)
 	retry.custom_minimum_size = Vector2(240, 72)
 	btns.add_child(retry)
+	# Dynamic difficulty: after two failed tries in a row, offer a gentler version.
+	if earned == 0 and summary.fails_in_a_row >= 2 and not assisted:
+		var gentle := UI.button("Try a gentler version", func(): main.play_seed(seed_id, {"assist": true}), 22, true)
+		gentle.custom_minimum_size = Vector2(260, 72)
+		btns.add_child(gentle)
+		hint_label.text = "No rush. A gentler version keeps the same story."
 	var back := UI.button("Greenhouse", func(): go("greenhouse"), 24, true)
 	back.custom_minimum_size = Vector2(220, 72)
 	btns.add_child(back)
 	retry.grab_focus()
+	Sfx.music("hub")
 
 	_animate_stars(earned)
 

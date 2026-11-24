@@ -5,6 +5,7 @@ extends Control
 
 var bubble: PanelContainer
 var text_label: Label
+var show_creature := true  # off when the 3D Sunday model is on screen
 var _t := 0.0
 
 
@@ -36,6 +37,8 @@ func _process(delta: float) -> void:
 
 
 func _draw() -> void:
+	if not show_creature:
+		return
 	# A small glowing creature: a living hour.
 	var bob := sin(_t * 2.2) * 4.0
 	var c := Vector2(44, 52 + bob)

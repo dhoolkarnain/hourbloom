@@ -153,6 +153,29 @@ func _run() -> void:
 			main.current.autoplay_step())
 	check(ok, "graft world finishes")
 
+	print("Skills applied: actions, achievements, dynamic difficulty, pooling")
+	for a in ["lane_1", "lane_4", "move_left", "move_right", "confirm", "pause", "hint"]:
+		check(InputMap.has_action(a), "input action '%s' exists" % a)
+	var pad_ok := false
+	for ev in InputMap.action_get_events("lane_1"):
+		pad_ok = pad_ok or ev is InputEventJoypadButton
+	check(pad_ok, "rhythm lanes have gamepad bindings (Steam controller support)")
+	check(GameState.achievements.has("FIRST_BLOOM"), "achievement FIRST_BLOOM unlocked")
+	check(GameState.achievements.has("PERFECT_RHYTHM"), "achievement PERFECT_RHYTHM unlocked")
+	check(GameState.achievements.has("FIRST_GRAFT"), "achievement FIRST_GRAFT unlocked")
+	GameState.record_result("asha_garden", 0)
+	var r2 := GameState.record_result("asha_garden", 0)
+	check(r2.fails_in_a_row == 2, "two fails in a row are counted (gentler offer appears)")
+	GameState.record_result("asha_garden", 1, true)
+	check(not GameState.fail_counts.has("asha_garden"), "a success clears the fail streak")
+	check(GameState.achievements.has("GENTLE_TRY"), "assisted success unlocks GENTLE_TRY")
+	var pool := Pool.new("orb", self)
+	var a1 := pool.acquire()
+	pool.release(a1)
+	check(pool.acquire() == a1, "object pool reuses nodes")
+	a1.queue_free()
+	check(AudioServer.get_bus_index("Music") != -1 and AudioServer.get_bus_index("SFX") != -1, "audio buses exist (mix hierarchy)")
+
 	print("Notebook and settings")
 	main.go("codex")
 	await frames(3)

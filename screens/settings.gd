@@ -8,7 +8,7 @@ var _reset_btn: Button
 func _ready() -> void:
 	add_child(UI.background(GameState.bloom_ratio()))
 	var panel := PanelContainer.new()
-	UI.place(panel, Vector2(0.5, 0.5), Vector2(620, 440))
+	UI.place(panel, Vector2(0.5, 0.5), Vector2(620, 560))
 	add_child(panel)
 	var col := VBoxContainer.new()
 	col.add_theme_constant_override("separation", 16)
@@ -17,6 +17,8 @@ func _ready() -> void:
 	col.add_child(_toggle("Assist mode (slower notes, gentler worlds)", "assist"))
 	col.add_child(_toggle("Sound", "sound"))
 	col.add_child(_toggle("Vibration", "haptics"))
+	col.add_child(_toggle("Battery saver (30 fps, no shadows)", "battery_saver"))
+	col.add_child(_toggle("Show FPS (F3)", "show_fps"))
 	_reset_btn = UI.button("Reset progress", _on_reset, 20, true)
 	col.add_child(_reset_btn)
 	col.add_child(UI.button("Back", func(): go("title"), 24))
@@ -30,6 +32,7 @@ func _toggle(text: String, key: String) -> CheckButton:
 	c.add_theme_font_size_override("font_size", 20)
 	c.toggled.connect(func(on: bool):
 		GameState.settings[key] = on
+		GameState.apply_performance_settings()
 		GameState.save_game()
 		Sfx.play("tap"))
 	return c

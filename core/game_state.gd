@@ -15,7 +15,9 @@ var stars: Dictionary = {}      # seed id -> best stars (0-3)
 var returned: Array = []        # seed ids whose hour went home (first clear)
 var codex: Array = []           # discovered graft ids
 var tutorial_step: int = 0      # 0 plant, 1 bloom, 2 graft hint, 3 done
-var settings := {"assist": false, "sound": true, "haptics": true}
+var achievements: Array = []
+var fail_counts: Dictionary = {} # seed id -> failed attempts in a row (dynamic difficulty)
+var settings := {"assist": false, "sound": true, "haptics": true, "battery_saver": false, "show_fps": false}
 
 var session_seconds: float = 0.0
 var break_nudged := false
@@ -24,6 +26,7 @@ var break_nudged := false
 func _ready() -> void:
 	reset_state()
 	load_game()
+	apply_performance_settings()
 
 
 func _process(delta: float) -> void:
@@ -39,7 +42,9 @@ func reset_state() -> void:
 	returned = []
 	codex = []
 	tutorial_step = 0
-	settings = {"assist": false, "sound": true, "haptics": true}
+	achievements = []
+	fail_counts = {}
+	settings = {"assist": false, "sound": true, "haptics": true, "battery_saver": false, "show_fps": false}
 
 
 # ---------- Seeds ----------
@@ -100,14 +105,19 @@ func try_graft(seed_id: String, pot_index: int) -> Dictionary:
 	if tutorial_step < 3:
 		tutorial_step = 3
 	save_game()
+	Platform.unlock("FIRST_GRAFT")
 	return graft
 
 
 # ---------- Results ----------
 
 ## Records a finished bloom. Returns a summary for the results screen.
-func record_result(seed_id: String, earned_stars: int) -> Dictionary:
+func record_result(seed_id: String, earned_stars: int, assisted := false) -> Dictionary:
 	var first_return := false
+	if earned_stars == 0:
+		fail_counts[seed_id] = int(fail_counts.get(seed_id, 0)) + 1
+	else:
+		fail_counts.erase(seed_id)
 	var best: int = stars.get(seed_id, 0)
 	var improved := earned_stars > best
 	if improved:
@@ -122,12 +132,14 @@ func record_result(seed_id: String, earned_stars: int) -> Dictionary:
 	save_game()
 	light_changed.emit(light)
 	hours_changed.emit(returned_count(), total_hours())
+	Platform.check_after_result(seed_id, earned_stars, assisted)
 	return {
 		"stars": earned_stars,
 		"best": max(best, earned_stars),
 		"improved": improved,
 		"first_return": first_return,
 		"light_gained": gained,
+		"fails_in_a_row": int(fail_counts.get(seed_id, 0)),
 	}
 
 
@@ -166,6 +178,8 @@ func to_dict() -> Dictionary:
 		"returned": returned,
 		"codex": codex,
 		"tutorial_step": tutorial_step,
+		"achievements": achievements,
+		"fail_counts": fail_counts,
 		"settings": settings,
 	}
 
@@ -182,6 +196,8 @@ func from_dict(d: Dictionary) -> void:
 	returned = d.get("returned", [])
 	codex = d.get("codex", [])
 	tutorial_step = int(d.get("tutorial_step", 0))
+	achievements = d.get("achievements", [])
+	fail_counts = d.get("fail_counts", {})
 	var s: Dictionary = d.get("settings", {})
 	for k in s.keys():
 		settings[k] = s[k]
@@ -210,6 +226,15 @@ func wipe_save() -> void:
 	reset_state()
 	if FileAccess.file_exists(SAVE_PATH):
 		DirAccess.remove_absolute(ProjectSettings.globalize_path(SAVE_PATH))
+
+
+## Battery saver: 30 fps cap, no real-time shadows (mobile thermal + battery guidance).
+func apply_performance_settings() -> void:
+	Engine.max_fps = 30 if settings.get("battery_saver", false) else 0
+
+
+func shadows_enabled() -> bool:
+	return not OS.has_feature("mobile") and not settings.get("battery_saver", false)
 
 
 func haptic(ms: int = 25) -> void:
